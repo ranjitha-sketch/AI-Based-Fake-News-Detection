@@ -1,0 +1,599 @@
+# ============================================================
+# AI-BASED FAKE NEWS DETECTION SYSTEM
+# Technologies: Python, Pandas, Scikit-learn, NLP, TF-IDF
+# Algorithm: Logistic Regression
+# ============================================================
+
+import os
+import re
+import string
+import pandas as pd
+import tkinter as tk
+
+from tkinter import messagebox, scrolledtext, filedialog
+from datetime import datetime
+
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import accuracy_score, classification_report
+
+
+# ======================== CONFIGURATION ========================
+
+DATASET_FILE = "news.csv"
+HISTORY_FILE = "prediction_history.csv"
+
+LABELS = {
+    0: "REAL NEWS",
+    1: "FAKE NEWS"
+}
+
+model = None
+model_accuracy = 0.0
+
+
+# ======================== TEXT PREPROCESSING ========================
+
+def clean_text(text):
+    """Clean news text using basic NLP preprocessing."""
+
+    text = str(text).lower()
+    text = re.sub(r"https?://\S+|www\.\S+", "", text)
+    text = re.sub(r"\S+@\S+", "", text)
+    text = re.sub(r"<.*?>", "", text)
+    text = re.sub(r"\d+", "", text)
+    text = text.translate(str.maketrans("", "", string.punctuation))
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
+
+
+# ======================== DATASET MANAGEMENT ========================
+
+def load_dataset():
+    """Load and validate the training dataset."""
+
+    if not os.path.exists(DATASET_FILE):
+        messagebox.showerror(
+            "Dataset Missing",
+            "The file news.csv was not found.\n\n"
+            "Create a CSV file with these columns:\n"
+            "text,label\n\n"
+            "Label 0 = Real news\n"
+            "Label 1 = Fake news"
+        )
+        return None
+
+    try:
+        data = pd.read_csv(DATASET_FILE)
+
+        required_columns = {"text", "label"}
+
+        if not required_columns.issubset(data.columns):
+            messagebox.showerror(
+                "Invalid Dataset",
+                "The dataset must contain 'text' and 'label' columns."
+            )
+            return None
+
+        data = data.dropna(subset=["text", "label"]).copy()
+        data["text"] = data["text"].apply(clean_text)
+        data["label"] = pd.to_numeric(data["label"], errors="coerce")
+        data = data.dropna(subset=["label"])
+
+        data = data[data["label"].isin([0, 1])]
+        data = data[data["text"].str.len() > 0]
+        data["label"] = data["label"].astype(int)
+
+        if data["label"].nunique() != 2:
+            messagebox.showerror(
+                "Dataset Error",
+                "The dataset must contain both real and fake news."
+            )
+            return None
+
+        if data["label"].value_counts().min() < 2:
+            messagebox.showerror(
+                "Dataset Error",
+                "At least two examples of each class are required."
+            )
+            return None
+
+        return data
+
+    except Exception as error:
+        messagebox.showerror("Dataset Error", str(error))
+        return None
+
+
+# ======================== MODEL TRAINING ========================
+
+def train_model():
+    """Train and evaluate the fake news detection model."""
+
+    global model, model_accuracy
+
+    data = load_dataset()
+
+    if data is None:
+        return
+
+    try:
+        x_train, x_test, y_train, y_test = train_test_split(
+            data["text"],
+            data["label"],
+            test_size=0.20,
+            random_state=42,
+            stratify=data["label"]
+        )
+
+        model = Pipeline([
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    stop_words="english",
+                    max_features=20000,
+                    ngram_range=(1, 2),
+                    sublinear_tf=True
+                )
+            ),
+            (
+                "classifier",
+                LogisticRegression(
+                    max_iter=1000,
+                    class_weight="balanced",
+                    random_state=42
+                )
+            )
+        ])
+
+        model.fit(x_train, y_train)
+
+        predictions = model.predict(x_test)
+        model_accuracy = accuracy_score(y_test, predictions) * 100
+
+        report = classification_report(
+            y_test,
+            predictions,
+            labels=[0, 1],
+            target_names=["REAL NEWS", "FAKE NEWS"],
+            zero_division=0
+        )
+
+        accuracy_label.config(
+            text=f"Model Test Accuracy: {model_accuracy:.2f}%"
+        )
+
+        dataset_label.config(
+            text=f"Training Dataset: {len(data)} articles"
+        )
+
+        result_area.delete("1.0", tk.END)
+        result_area.insert(
+            tk.END,
+            "MODEL TRAINING COMPLETED SUCCESSFULLY\n\n"
+            f"Total articles: {len(data)}\n"
+            f"Training articles: {len(x_train)}\n"
+            f"Testing articles: {len(x_test)}\n"
+            f"Test accuracy: {model_accuracy:.2f}%\n\n"
+            "CLASSIFICATION REPORT\n"
+            "-----------------------------\n"
+            f"{report}\n"
+            "Note: Test accuracy does not guarantee "
+            "correct predictions on new articles."
+        )
+
+        messagebox.showinfo(
+            "Training Complete",
+            "The AI model has been trained successfully."
+        )
+
+    except Exception as error:
+        model = None
+        messagebox.showerror(
+            "Training Error",
+            f"Unable to train the model:\n{error}"
+        )
+
+
+# ======================== PREDICTION HISTORY ========================
+
+def save_history(news, prediction, confidence):
+    """Save predictions locally in a CSV file."""
+
+    record = {
+        "date_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "news_text": news,
+        "prediction": prediction,
+        "confidence_percent": round(confidence, 2)
+    }
+
+    try:
+        file_exists = os.path.exists(HISTORY_FILE)
+
+        pd.DataFrame([record]).to_csv(
+            HISTORY_FILE,
+            mode="a",
+            header=not file_exists,
+            index=False,
+            encoding="utf-8"
+        )
+
+    except Exception as error:
+        messagebox.showwarning(
+            "History Warning",
+            f"Prediction completed, but history was not saved:\n{error}"
+        )
+
+
+# ======================== FAKE NEWS DETECTION ========================
+
+def detect_news():
+    """Classify the entered article using the trained model."""
+
+    if model is None:
+        messagebox.showwarning(
+            "Model Not Trained",
+            "Please train the AI model before detecting news."
+        )
+        return
+
+    news = news_input.get("1.0", tk.END).strip()
+
+    if len(news) < 10:
+        messagebox.showwarning(
+            "Input Required",
+            "Please enter a news headline or article."
+        )
+        return
+
+    try:
+        cleaned_news = clean_text(news)
+
+        if not cleaned_news:
+            messagebox.showwarning(
+                "Invalid Input",
+                "Please enter meaningful news text."
+            )
+            return
+
+        prediction = int(model.predict([cleaned_news])[0])
+        probabilities = model.predict_proba([cleaned_news])[0]
+
+        class_positions = list(model.classes_)
+        prediction_index = class_positions.index(prediction)
+        confidence = float(probabilities[prediction_index] * 100)
+
+        label = LABELS[prediction]
+
+        result_area.delete("1.0", tk.END)
+        result_area.insert(
+            tk.END,
+            "NEWS DETECTION RESULT\n"
+            "================================\n\n"
+            f"Prediction: {label}\n"
+            f"Model confidence: {confidence:.2f}%\n\n"
+            f"Real news score: "
+            f"{probabilities[class_positions.index(0)] * 100:.2f}%\n"
+            f"Fake news score: "
+            f"{probabilities[class_positions.index(1)] * 100:.2f}%\n\n"
+            "IMPORTANT INFORMATION\n"
+            "--------------------------------\n"
+            "This result is based on patterns learned from "
+            "the training dataset. It does not independently "
+            "verify facts or confirm whether the story is true.\n\n"
+            "Check the original source, publication date, "
+            "supporting evidence, and trusted news organizations."
+        )
+
+        save_history(news, label, confidence)
+
+    except Exception as error:
+        messagebox.showerror(
+            "Prediction Error",
+            f"Unable to classify this news:\n{error}"
+        )
+
+
+# ======================== CLEAR INPUT ========================
+
+def clear_input():
+    """Clear the input and result sections."""
+
+    news_input.delete("1.0", tk.END)
+    result_area.delete("1.0", tk.END)
+
+
+# ======================== VIEW HISTORY ========================
+
+def view_history():
+    """Display saved prediction history."""
+
+    if not os.path.exists(HISTORY_FILE):
+        messagebox.showinfo(
+            "No History",
+            "No prediction history is available yet."
+        )
+        return
+
+    try:
+        history = pd.read_csv(HISTORY_FILE)
+
+        history_window = tk.Toplevel(root)
+        history_window.title("Prediction History")
+        history_window.geometry("850x500")
+        history_window.configure(bg="#f4f6fb")
+
+        heading = tk.Label(
+            history_window,
+            text="PREDICTION HISTORY",
+            font=("Arial", 16, "bold"),
+            bg="#f4f6fb",
+            fg="#243b67"
+        )
+        heading.pack(pady=10)
+
+        history_text = scrolledtext.ScrolledText(
+            history_window,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            width=100,
+            height=25
+        )
+        history_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        history_text.insert(tk.END, history.to_string(index=False))
+        history_text.config(state=tk.DISABLED)
+
+    except Exception as error:
+        messagebox.showerror("History Error", str(error))
+
+
+# ======================== EXPORT HISTORY ========================
+
+def export_history():
+    """Allow the user to export prediction history."""
+
+    if not os.path.exists(HISTORY_FILE):
+        messagebox.showinfo(
+            "No History",
+            "There is no prediction history to export."
+        )
+        return
+
+    destination = filedialog.asksaveasfilename(
+        title="Export Prediction History",
+        defaultextension=".csv",
+        filetypes=[("CSV files", "*.csv")]
+    )
+
+    if not destination:
+        return
+
+    try:
+        history = pd.read_csv(HISTORY_FILE)
+        history.to_csv(destination, index=False, encoding="utf-8")
+
+        messagebox.showinfo(
+            "Export Successful",
+            f"History exported to:\n{destination}"
+        )
+
+    except Exception as error:
+        messagebox.showerror("Export Error", str(error))
+
+
+# ======================== ABOUT PROJECT ========================
+
+def show_about():
+    """Show project information."""
+
+    messagebox.showinfo(
+        "About This Project",
+        "AI-BASED FAKE NEWS DETECTION SYSTEM\n\n"
+        "Language: Python\n"
+        "Interface: Tkinter\n"
+        "Data processing: Pandas\n"
+        "NLP: TF-IDF Vectorization\n"
+        "Machine Learning: Logistic Regression\n\n"
+        "The application learns from labeled news articles "
+        "and predicts whether new text resembles the real "
+        "or fake examples in the dataset.\n\n"
+        "This is an educational prototype, not an "
+        "independent fact-checking service."
+    )
+
+
+# ======================== GUI APPLICATION ========================
+
+root = tk.Tk()
+root.title("AI-Based Fake News Detection System")
+root.geometry("1000x800")
+root.minsize(800, 650)
+root.configure(bg="#f4f6fb")
+
+
+# ------------------------ HEADER ------------------------
+
+header = tk.Frame(root, bg="#243b67", height=100)
+header.pack(fill=tk.X)
+header.pack_propagate(False)
+
+title_label = tk.Label(
+    header,
+    text="AI-BASED FAKE NEWS DETECTION",
+    font=("Arial", 22, "bold"),
+    bg="#243b67",
+    fg="white"
+)
+title_label.pack(pady=(18, 5))
+
+subtitle_label = tk.Label(
+    header,
+    text="Natural Language Processing + Machine Learning",
+    font=("Arial", 11),
+    bg="#243b67",
+    fg="#dce6ff"
+)
+subtitle_label.pack()
+
+
+# ------------------------ STATUS ------------------------
+
+status_frame = tk.Frame(root, bg="#f4f6fb")
+status_frame.pack(fill=tk.X, padx=20, pady=10)
+
+accuracy_label = tk.Label(
+    status_frame,
+    text="Model Test Accuracy: Not trained",
+    font=("Arial", 10, "bold"),
+    bg="#f4f6fb",
+    fg="#243b67"
+)
+accuracy_label.pack(side=tk.LEFT)
+
+dataset_label = tk.Label(
+    status_frame,
+    text="Training Dataset: Not loaded",
+    font=("Arial", 10),
+    bg="#f4f6fb",
+    fg="#555555"
+)
+dataset_label.pack(side=tk.RIGHT)
+
+
+# ------------------------ INPUT SECTION ------------------------
+
+input_frame = tk.LabelFrame(
+    root,
+    text=" Enter News Article ",
+    font=("Arial", 12, "bold"),
+    bg="white",
+    fg="#243b67",
+    padx=12,
+    pady=12
+)
+input_frame.pack(fill=tk.X, padx=20, pady=8)
+
+news_input = scrolledtext.ScrolledText(
+    input_frame,
+    height=7,
+    wrap=tk.WORD,
+    font=("Arial", 11),
+    relief=tk.GROOVE,
+    bd=1
+)
+news_input.pack(fill=tk.X, pady=5)
+
+
+# ------------------------ ACTION BUTTONS ------------------------
+
+button_frame = tk.Frame(root, bg="#f4f6fb")
+button_frame.pack(fill=tk.X, padx=20, pady=10)
+
+train_button = tk.Button(
+    button_frame,
+    text="Train AI Model",
+    command=train_model,
+    bg="#243b67",
+    fg="white",
+    font=("Arial", 10, "bold"),
+    width=16,
+    pady=8,
+    cursor="hand2"
+)
+train_button.pack(side=tk.LEFT, padx=4)
+
+detect_button = tk.Button(
+    button_frame,
+    text="Detect News",
+    command=detect_news,
+    bg="#247a55",
+    fg="white",
+    font=("Arial", 10, "bold"),
+    width=16,
+    pady=8,
+    cursor="hand2"
+)
+detect_button.pack(side=tk.LEFT, padx=4)
+
+clear_button = tk.Button(
+    button_frame,
+    text="Clear",
+    command=clear_input,
+    bg="#64748b",
+    fg="white",
+    font=("Arial", 10, "bold"),
+    width=10,
+    pady=8,
+    cursor="hand2"
+)
+clear_button.pack(side=tk.LEFT, padx=4)
+
+
+# ------------------------ RESULT SECTION ------------------------
+
+result_frame = tk.LabelFrame(
+    root,
+    text=" Detection Results and Model Evaluation ",
+    font=("Arial", 12, "bold"),
+    bg="white",
+    fg="#243b67",
+    padx=10,
+    pady=10
+)
+result_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=8)
+
+result_area = scrolledtext.ScrolledText(
+    result_frame,
+    wrap=tk.WORD,
+    font=("Consolas", 10),
+    bg="#fbfcff",
+    fg="#202938",
+    height=12
+)
+result_area.pack(fill=tk.BOTH, expand=True)
+
+
+# ------------------------ FOOTER BUTTONS ------------------------
+
+footer_frame = tk.Frame(root, bg="#f4f6fb")
+footer_frame.pack(fill=tk.X, padx=20, pady=(4, 12))
+
+history_button = tk.Button(
+    footer_frame,
+    text="View History",
+    command=view_history,
+    font=("Arial", 10),
+    width=15,
+    pady=6
+)
+history_button.pack(side=tk.LEFT, padx=4)
+
+export_button = tk.Button(
+    footer_frame,
+    text="Export History",
+    command=export_history,
+    font=("Arial", 10),
+    width=15,
+    pady=6
+)
+export_button.pack(side=tk.LEFT, padx=4)
+
+about_button = tk.Button(
+    footer_frame,
+    text="About Project",
+    command=show_about,
+    font=("Arial", 10),
+    width=15,
+    pady=6
+)
+about_button.pack(side=tk.RIGHT, padx=4)
+
+
+# ------------------------ START APPLICATION ------------------------
+
+if __name__ == "__main__":
+    root.mainloop()
